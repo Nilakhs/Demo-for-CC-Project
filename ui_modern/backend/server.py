@@ -89,7 +89,7 @@ WORKLOAD_CATALOG = [
     },
 ]
 
-ALLOWED_WORKLOAD_FILES = {w["file"] for w in WORKLOAD_CATALOG} | {"all", "all-workloads"}
+ALLOWED_WORKLOAD_FILES = {w["file"] for w in WORKLOAD_CATALOG} | {"all", "all-workloads", "namespace", "ns"}
 
 # Resolve K8S manifests directory
 K8S = Path(__file__).resolve().parent.parent.parent / "k8s"
@@ -160,6 +160,28 @@ def run_action(label: str, *args: str) -> tuple[int, str]:
     cmd_str = f"kubectl {shown}"
     record_log(label, cmd_str, code, out)
     return code, out
+
+
+def ensure_namespace():
+    """Ensures namespace gpu-lab exists and is active, waiting if it is in Terminating state."""
+    ns_info = kjson("get", "namespace", NS)
+    if ns_info and ns_info.get("status", {}).get("phase") == "Terminating":
+        t0 = time.time()
+        while time.time() - t0 < 30:
+            time.sleep(1)
+            if kjson("get", "namespace", NS) is None:
+                break
+    ns_file = K8S / "01-namespace.yaml"
+    if ns_file.is_file():
+        kubectl("apply", "-f", str(ns_file))
+
+
+def clear_transient_taints():
+    """Removes any existing gpu-fault or maintenance taints to prevent leakage between scenarios."""
+    kubectl("taint", "nodes", GPU, "gpu-fault-")
+    kubectl("taint", "nodes", GPU, "gpu-fault:NoExecute-")
+    kubectl("taint", "nodes", GEN, "maintenance-")
+    kubectl("taint", "nodes", GEN, "maintenance:NoSchedule-")
 
 
 # ------------------------------------------------------------------ Formatting Helpers
@@ -312,6 +334,14 @@ class WorkloadRequest(BaseModel):
     file: str = Field(..., description="Manifest filename or 'all'")
 
 
+class WorkloadDeployRequest(BaseModel):
+    file: Optional[str] = Field(default="02-website.yaml", description="Manifest filename to deploy")
+
+
+class WorkloadDeleteRequest(BaseModel):
+    file: Optional[str] = Field(default="all", description="Manifest filename or 'all'")
+
+
 class TaintRequest(BaseModel):
     action: str = Field(..., description="'add' or 'remove'")
     node: str = Field(..., description="Worker node name (taints-lab-worker or taints-lab-worker2)")
@@ -328,7 +358,7 @@ class ScenarioRequest(BaseModel):
 app = FastAPI(
     title="GPU Node Scheduling Dashboard API",
     description="Backend API for Kubernetes Taints and Tolerations Lab",
-    version="2.2.0",
+    version="2.4.0",
 )
 
 app.add_middleware(
@@ -360,9 +390,10 @@ def get_workload_catalog():
 
 
 @app.get("/api/status")
+@app.get("/api/cluster")
 def get_status():
     """
-    Returns full cluster status:
+    Returns full cluster status (Dual route support: /api/status & /api/cluster):
     - nodes: list of nodes with roles, taints, labels, ready condition, pod count, pod summaries,
              and exact hardware specs (cpu_capacity, memory_capacity, os_image, kernel_version, runtime).
     - pods: list of pods in gpu-lab with phase, node, tolerations, and nodeSelector
@@ -677,23 +708,31 @@ def run_scenario(payload: ScenarioRequest):
     """
     sc = payload.scenario.strip().upper()
     executed_commands = []
+    all_success = True
+    error_details = []
 
-    def run_cmd(label: str, *args: str):
+    def run_cmd(label: str, *args: str, critical: bool = True):
+        nonlocal all_success
         c, o = run_action(label, *args)
         executed_commands.append({"label": label, "cmd": " ".join(args), "code": c, "output": o})
+        if critical and c != 0:
+            all_success = False
+            error_details.append(f"[{label}] failed (code {c}): {o}")
         return c, o
 
-    # Helper: Ensure namespace gpu-lab exists
-    ns_file = K8S / "01-namespace.yaml"
-    if ns_file.is_file():
-        kubectl("apply", "-f", str(ns_file))
+    # Helper: Ensure namespace gpu-lab exists and is active
+    ensure_namespace()
 
-    # Helper: Clean existing deployments/pods
+    # Helper: Clean existing deployments/pods quickly and cleanly
     def clean_existing_workloads():
-        run_cmd("cleanup workloads", "delete", "deployment,pod", "-n", NS, "--all", "--ignore-not-found", "--wait=false")
+        # Delete deployments
+        kubectl("delete", "deployment", "-n", NS, "--all", "--ignore-not-found", "--wait=false")
+        # Force delete pods so pods never stay in terminating state during subsequent applies
+        kubectl("delete", "pod", "-n", NS, "--all", "--ignore-not-found", "--grace-period=0", "--force")
 
     if sc == "S1":
         # S1: Baseline (GPU node not reserved yet; website spreads everywhere)
+        clear_transient_taints()
         for k in LAB_TAINT_KEYS:
             kubectl("taint", "nodes", GPU, f"{k}-")
             kubectl("taint", "nodes", GPU, f"{k}:NoSchedule-")
@@ -706,36 +745,36 @@ def run_scenario(payload: ScenarioRequest):
 
     elif sc == "S2":
         # S2: Website without toleration (kept off the GPU node)
+        clear_transient_taints()
         run_cmd("S2 label GPU", "label", "nodes", GPU, "hardware=gpu", "--overwrite")
         run_cmd("S2 taint GPU", "taint", "nodes", GPU, "hardware=gpu:NoSchedule", "--overwrite")
-        kubectl("taint", "nodes", GEN, "maintenance-")
         clean_existing_workloads()
         run_cmd("S2 deploy website", "apply", "-f", str(K8S / "02-website.yaml"))
         summary = "S2 Website without Toleration: GPU node is reserved with hardware=gpu:NoSchedule. The website pods lack a matching toleration, so all 4 replicas schedule exclusively on the general worker node (0 on GPU node)."
 
     elif sc == "S3":
         # S3: ML job toleration only (allowed on GPU, but not forced)
+        clear_transient_taints()
         run_cmd("S3 label GPU", "label", "nodes", GPU, "hardware=gpu", "--overwrite")
         run_cmd("S3 taint GPU", "taint", "nodes", GPU, "hardware=gpu:NoSchedule", "--overwrite")
-        kubectl("taint", "nodes", GEN, "maintenance-")
         clean_existing_workloads()
         run_cmd("S3 deploy ML job", "apply", "-f", str(K8S / "03-ml-training-toleration-only.yaml"))
         summary = "S3 Toleration Only: The ML training job tolerates hardware=gpu:NoSchedule but lacks a nodeSelector. The taint no longer repels it from the GPU node, but nothing forces it there either, so replicas distribute across both workers."
 
     elif sc == "S4":
         # S4: ML job with typo in toleration (gpus instead of gpu)
+        clear_transient_taints()
         run_cmd("S4 label GPU", "label", "nodes", GPU, "hardware=gpu", "--overwrite")
         run_cmd("S4 taint GPU", "taint", "nodes", GPU, "hardware=gpu:NoSchedule", "--overwrite")
-        kubectl("taint", "nodes", GEN, "maintenance-")
         clean_existing_workloads()
         run_cmd("S4 deploy ML typo", "apply", "-f", str(K8S / "04-ml-training-wrong-toleration.yaml"))
         summary = "S4 Typo in Toleration: Toleration specifies key 'hardware' and value 'gpus' instead of 'gpu'. Because Equal operator requires exact match of key, value, and effect, the taint is NOT tolerated and all 4 pods are kept off the GPU node."
 
     elif sc == "S5":
         # S5: Dedicated GPU node (ML dedicated + website)
+        clear_transient_taints()
         run_cmd("S5 label GPU", "label", "nodes", GPU, "hardware=gpu", "--overwrite")
         run_cmd("S5 taint GPU", "taint", "nodes", GPU, "hardware=gpu:NoSchedule", "--overwrite")
-        kubectl("taint", "nodes", GEN, "maintenance-")
         clean_existing_workloads()
         run_cmd("S5 deploy website", "apply", "-f", str(K8S / "02-website.yaml"))
         run_cmd("S5 deploy dedicated ML", "apply", "-f", str(K8S / "05-ml-training-dedicated.yaml"))
@@ -743,6 +782,7 @@ def run_scenario(payload: ScenarioRequest):
 
     elif sc == "S6":
         # S6: General node maintenance (website has nowhere to go -> Pending)
+        clear_transient_taints()
         run_cmd("S6 taint GPU", "taint", "nodes", GPU, "hardware=gpu:NoSchedule", "--overwrite")
         run_cmd("S6 maintenance taint", "taint", "nodes", GEN, "maintenance=true:NoSchedule", "--overwrite")
         clean_existing_workloads()
@@ -751,21 +791,22 @@ def run_scenario(payload: ScenarioRequest):
 
     elif sc == "S6B":
         # S6b: Maintenance finished -> Pending pods recover
-        run_cmd("S6b remove maintenance", "taint", "nodes", GEN, "maintenance-")
+        run_cmd("S6b remove maintenance", "taint", "nodes", GEN, "maintenance-", critical=False)
         summary = "S6b Maintenance Cleared: Maintenance taint removed from general worker. The Kubernetes scheduler immediately re-evaluates the Pending website pods and schedules them on the newly available general worker."
 
     elif sc == "S7":
         # S7: Soft taint (PreferNoSchedule) -> GPU node avoided if possible
+        clear_transient_taints()
         kubectl("taint", "nodes", GPU, "hardware:NoSchedule-")
         run_cmd("S7 soft taint GPU", "taint", "nodes", GPU, "hardware=gpu:PreferNoSchedule", "--overwrite")
         run_cmd("S7 label GPU", "label", "nodes", GPU, "hardware=gpu", "--overwrite")
-        kubectl("taint", "nodes", GEN, "maintenance-")
         clean_existing_workloads()
         run_cmd("S7 deploy website", "apply", "-f", str(K8S / "02-website.yaml"))
         summary = "S7 Soft Taint (PreferNoSchedule): GPU node is tainted with PreferNoSchedule. The scheduler treats this as a preference rather than a hard barrier; all 4 website replicas are scheduled on the general node while capacity exists."
 
     elif sc == "S7B":
         # S7b: Soft taint spillover under maintenance / load
+        kubectl("taint", "nodes", GPU, "gpu-fault-")
         run_cmd("S7b soft taint GPU", "taint", "nodes", GPU, "hardware=gpu:PreferNoSchedule", "--overwrite")
         run_cmd("S7b maintenance taint", "taint", "nodes", GEN, "maintenance=true:NoSchedule", "--overwrite")
         run_cmd("S7b scale website", "scale", "deployment/website", "-n", NS, "--replicas=6")
@@ -773,13 +814,34 @@ def run_scenario(payload: ScenarioRequest):
 
     elif sc == "S8":
         # S8: GPU fault NoExecute -> Eviction of running pods
+        # Fix S8 race condition: Deploy pods, verify all 3 are Running on worker2, THEN apply NoExecute taint!
+        clear_transient_taints()
         run_cmd("S8 label GPU", "label", "nodes", GPU, "hardware=gpu", "--overwrite")
         run_cmd("S8 taint GPU", "taint", "nodes", GPU, "hardware=gpu:NoSchedule", "--overwrite")
-        kubectl("taint", "nodes", GEN, "maintenance-")
         clean_existing_workloads()
+        time.sleep(0.5)
         run_cmd("S8 deploy fault test pods", "apply", "-f", str(K8S / "06-gpu-fault-pods.yaml"))
+        
+        # Poll until all 3 pods are scheduled on worker2 and in phase Running (max 20s, every 0.5s)
+        poll_start = time.time()
+        pods_running = False
+        while time.time() - poll_start < 20.0:
+            raw_fault_pods = kjson("get", "pods", "-n", NS, "-l", "app=gpu-fault-test")
+            items = raw_fault_pods.get("items", []) if raw_fault_pods else []
+            if len(items) >= 3:
+                running_on_gpu = [
+                    p for p in items
+                    if p.get("spec", {}).get("nodeName") == GPU and
+                       p.get("status", {}).get("phase") == "Running"
+                ]
+                if len(running_on_gpu) >= 3:
+                    pods_running = True
+                    break
+            time.sleep(0.5)
+
+        # Apply NoExecute fault taint after pods are verified Running
         run_cmd("S8 NoExecute fault taint", "taint", "nodes", GPU, "gpu-fault=true:NoExecute", "--overwrite")
-        summary = "S8 NoExecute Eviction: Applied gpu-fault=true:NoExecute on GPU node. Running pods without toleration (ml-job-no-grace) are evicted immediately; pods with tolerationSeconds (ml-job-grace-30s) are evicted after 30s grace; monitoring pods with full toleration remain running."
+        summary = "S8 NoExecute Eviction: All 3 pods were verified Running on GPU node before applying gpu-fault=true:NoExecute. Running pods without toleration (ml-job-no-grace) are evicted immediately; pods with tolerationSeconds (ml-job-grace-30s) are evicted after 30s grace; monitoring pods with full toleration remain running."
 
     elif sc in ("RESET", "0"):
         # Reset lab
@@ -789,7 +851,7 @@ def run_scenario(payload: ScenarioRequest):
                 kubectl("taint", "nodes", w, f"{k}:PreferNoSchedule-")
                 kubectl("taint", "nodes", w, f"{k}:NoSchedule-")
                 kubectl("taint", "nodes", w, f"{k}:NoExecute-")
-        run_cmd("reset label", "label", "nodes", GPU, "hardware-")
+        run_cmd("reset label", "label", "nodes", GPU, "hardware-", critical=False)
         clean_existing_workloads()
         summary = "Lab Reset: Cleared all lab taints, hardware labels, and workload objects. Cluster returned to clean baseline state."
 
@@ -805,17 +867,20 @@ def run_scenario(payload: ScenarioRequest):
 
     return {
         "scenario": payload.scenario,
-        "success": True,
-        "summary": summary,
+        "success": all_success,
+        "summary": summary if all_success else f"Executed with errors: {'; '.join(error_details)}",
         "commands": executed_commands,
         "snapshot": current_snapshot,
+        "error": "\n".join(error_details) if not all_success else None,
     }
 
 
+# ------------------------------------------------------------------ Guided Steps & Aliases
 @app.post("/api/action/guided-step")
+@app.post("/api/steps/run")
 def run_guided_step(payload: GuidedStepRequest):
     """
-    Executes a predefined guided step:
+    Executes a predefined guided step (Dual route: /api/action/guided-step & /api/steps/run):
     1 = Reserve GPU node (label hardware=gpu + taint hardware=gpu:NoSchedule)
     2 = Maintenance on (taint worker maintenance=true:NoSchedule)
     3 = Maintenance off (remove worker maintenance taint)
@@ -867,9 +932,22 @@ def run_guided_step(payload: GuidedStepRequest):
             detail=f"Invalid step {step}. Valid steps: 0, 1, 2, 3, 4, 5",
         )
 
-    return {"success": True, "step": step, "message": msg, "executed": executed}
+    all_success = all(e.get("code") == 0 for e in executed)
+    return {
+        "success": all_success,
+        "step": step,
+        "message": msg if all_success else f"{msg} (with errors)",
+        "executed": executed,
+    }
 
 
+@app.post("/api/steps/reset")
+def reset_guided_step():
+    """Alias for resetting the lab (step 0)."""
+    return run_guided_step(GuidedStepRequest(step=0))
+
+
+# ------------------------------------------------------------------ Workloads & Aliases
 @app.post("/api/action/workload")
 def run_workload_action(payload: WorkloadRequest):
     """
@@ -894,14 +972,36 @@ def run_workload_action(payload: WorkloadRequest):
         )
 
     if action == "delete" and filename in ("all", "all-workloads"):
-        code, out = run_action("delete namespace", "delete", "namespace", NS, "--wait=false")
+        code, out = run_action(
+            "delete all workloads",
+            "delete",
+            "deployment,pod",
+            "-n",
+            NS,
+            "--all",
+            "--ignore-not-found",
+            "--wait=false",
+        )
         return {
             "success": code == 0,
             "action": "delete",
             "file": "all",
+            "message": f"Deleted all deployments and pods in namespace {NS}",
+            "returncode": code,
+            "output": out,
+            "error": out if code != 0 else None,
+        }
+
+    if action == "delete" and filename in ("namespace", "ns"):
+        code, out = run_action("delete namespace", "delete", "namespace", NS, "--wait=false")
+        return {
+            "success": code == 0,
+            "action": "delete",
+            "file": filename,
             "message": f"Triggered deletion of namespace {NS}",
             "returncode": code,
             "output": out,
+            "error": out if code != 0 else None,
         }
 
     manifest_path = K8S / filename
@@ -912,18 +1012,17 @@ def run_workload_action(payload: WorkloadRequest):
         )
 
     if action == "deploy":
-        ns_path = K8S / "01-namespace.yaml"
-        if ns_path.is_file():
-            kubectl("apply", "-f", str(ns_path))
+        ensure_namespace()
 
         code, out = run_action(f"deploy {filename}", "apply", "-f", str(manifest_path))
         return {
             "success": code == 0,
             "action": "deploy",
             "file": filename,
-            "message": f"Applied {filename}",
+            "message": f"Applied {filename}" if code == 0 else f"Failed to apply {filename}",
             "returncode": code,
             "output": out,
+            "error": out if code != 0 else None,
         }
 
     else:  # delete
@@ -939,16 +1038,39 @@ def run_workload_action(payload: WorkloadRequest):
             "success": code == 0,
             "action": "delete",
             "file": filename,
-            "message": f"Deleted resources from {filename}",
+            "message": f"Deleted resources from {filename}" if code == 0 else f"Error deleting {filename}",
             "returncode": code,
             "output": out,
+            "error": out if code != 0 else None,
         }
 
 
+@app.post("/api/workloads/deploy")
+def deploy_workload_alias(payload: Optional[WorkloadDeployRequest] = None):
+    """Alias for deploying a workload manifest."""
+    target_file = payload.file if payload and payload.file else "02-website.yaml"
+    return run_workload_action(WorkloadRequest(action="deploy", file=target_file))
+
+
+@app.post("/api/workloads/delete")
+def delete_workload_alias(payload: Optional[WorkloadDeleteRequest] = None):
+    """Alias for deleting a workload manifest."""
+    target_file = payload.file if payload and payload.file else "all"
+    return run_workload_action(WorkloadRequest(action="delete", file=target_file))
+
+
+@app.post("/api/workloads/delete-all")
+def delete_all_workloads_alias():
+    """Alias for deleting all workloads in the namespace."""
+    return run_workload_action(WorkloadRequest(action="delete", file="all"))
+
+
+# ------------------------------------------------------------------ Taints & Aliases
 @app.post("/api/action/taint")
+@app.post("/api/taints")
 def run_taint_action(payload: TaintRequest):
     """
-    Adds or removes a taint on a worker node.
+    Adds or removes a taint on a worker node (Dual route: /api/action/taint & /api/taints).
     Safeguard: strictly prohibited on control-plane.
     """
     action = payload.action.strip().lower()
@@ -984,6 +1106,7 @@ def run_taint_action(payload: TaintRequest):
             "taint": taint_spec,
             "returncode": code,
             "output": out,
+            "error": out if code != 0 else None,
         }
 
     elif action == "remove":
@@ -996,6 +1119,7 @@ def run_taint_action(payload: TaintRequest):
             "taint": taint_spec,
             "returncode": code,
             "output": out,
+            "error": out if code != 0 else None,
         }
 
     else:
@@ -1114,5 +1238,5 @@ def get_command_logs(limit: int = Query(default=30, ge=1, le=100)):
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("Starting GPU Node Scheduling API on http://0.0.0.0:8000 (context=%s)", CONTEXT)
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    logger.info("Starting GPU Node Scheduling API on http://127.0.0.1:8000 (context=%s)", CONTEXT)
+    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)

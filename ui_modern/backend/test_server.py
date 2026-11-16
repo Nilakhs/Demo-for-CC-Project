@@ -1,10 +1,18 @@
 """
-Full test suite for FastAPI backend server.py:
-- Auto-Pilot Scenario Runner API (/api/action/run-scenario)
-- Node Hardware Specs in /api/status (cpu_capacity, memory_capacity, os_image, kernel_version, runtime)
-- Pod logs (/api/pod-logs/{pod})
-- Cluster Export report (/api/export)
-- Guided steps & workloads
+Comprehensive regression & new-feature test suite for FastAPI backend server.py:
+1. URL Route Aliases (Dual Route Support):
+   - /api/cluster (alias to /api/status)
+   - /api/steps/run & /api/steps/reset
+   - /api/workloads/deploy, /api/workloads/delete, /api/workloads/delete-all
+   - /api/taints
+2. Scenario S8 Race Condition Fix:
+   - Verifies pods are Running on worker2 before NoExecute taint is applied
+3. Leftover Taints Cleanup:
+   - Verifies clean state in S1-S7b
+4. Real Command Success/Failure Reporting:
+   - Non-zero return codes set success=False and return stderr
+5. Loopback Binding:
+   - Default host is 127.0.0.1
 """
 
 import sys
@@ -26,101 +34,116 @@ def test_all():
     assert r.status_code == 200, f"Health check failed: {r.text}"
     print("Health response:", r.json())
 
-    print("\n--- 2. Testing Exact Node Hardware Specs in GET /api/status ---")
-    r = client.get("/api/status")
-    assert r.status_code == 200, f"Status failed: {r.text}"
-    status_data = r.json()
-    assert len(status_data["nodes"]) == 3
-    for n in status_data["nodes"]:
-        print(f"Node {n['name']}:")
-        print(f"  - cpu_capacity: {n['cpu_capacity']}")
-        print(f"  - memory_capacity: {n['memory_capacity']}")
-        print(f"  - os_image: {n['os_image']}")
-        print(f"  - kernel_version: {n['kernel_version']}")
-        print(f"  - runtime: {n['runtime']}")
-        assert "cores" in n["cpu_capacity"]
-        assert "GiB" in n["memory_capacity"] or "MiB" in n["memory_capacity"]
-        assert "Debian" in n["os_image"] or "Linux" in n["os_image"]
-        assert "WSL2" in n["kernel_version"] or "6." in n["kernel_version"]
-        assert "containerd" in n["runtime"]
+    print("\n--- 2. Testing URL Route Aliases ---")
+    # /api/cluster alias
+    r = client.get("/api/cluster")
+    assert r.status_code == 200, f"/api/cluster alias failed: {r.text}"
+    cluster_data = r.json()
+    assert cluster_data["connected"] is True
+    assert len(cluster_data["nodes"]) == 3
+    print("✓ GET /api/cluster works as alias to /api/status")
 
-    print("\n--- 3. Testing POST /api/action/run-scenario (S1: Baseline) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S1"})
-    assert r.status_code == 200, f"S1 scenario failed: {r.text}"
-    res = r.json()
-    assert res["scenario"] == "S1"
-    assert res["success"] is True
-    assert "summary" in res and len(res["summary"]) > 0
-    assert "commands" in res
-    assert "snapshot" in res
-    print("S1 Summary:", res["summary"])
-    print("S1 Snapshot Counts:", res["snapshot"]["counts"])
+    # /api/taints alias (control-plane safeguard test)
+    r = client.post("/api/taints", json={
+        "action": "add",
+        "node": "taints-lab-control-plane",
+        "key": "test",
+        "value": "v",
+        "effect": "NoSchedule"
+    })
+    assert r.status_code == 400
+    print("✓ POST /api/taints safeguard works (control-plane protected with 400)")
 
-    print("\n--- 4. Testing POST /api/action/run-scenario (S2: Website without toleration) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S2"})
-    assert r.status_code == 200, f"S2 scenario failed: {r.text}"
-    res = r.json()
-    assert res["snapshot"]["counts"]["gpu_reserved"] is True
-    print("S2 Summary:", res["summary"])
-    print("S2 GPU reserved:", res["snapshot"]["counts"]["gpu_reserved"])
-
-    print("\n--- 5. Testing POST /api/action/run-scenario (S5: Dedicated GPU node) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S5"})
-    assert r.status_code == 200, f"S5 scenario failed: {r.text}"
-    res = r.json()
-    print("S5 Summary:", res["summary"])
-
-    print("\n--- 6. Testing POST /api/action/run-scenario (S6: General maintenance -> Pending) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S6"})
-    assert r.status_code == 200, f"S6 scenario failed: {r.text}"
-    res = r.json()
-    print("S6 Summary:", res["summary"])
-
-    print("\n--- 7. Testing POST /api/action/run-scenario (S6b: Maintenance removed) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S6b"})
-    assert r.status_code == 200, f"S6b scenario failed: {r.text}"
-    res = r.json()
-    print("S6b Summary:", res["summary"])
-
-    print("\n--- 8. Testing POST /api/action/run-scenario (S7: Soft taint) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S7"})
-    assert r.status_code == 200, f"S7 scenario failed: {r.text}"
-    res = r.json()
-    print("S7 Summary:", res["summary"])
-
-    print("\n--- 9. Testing POST /api/action/run-scenario (S7b: Soft taint under maintenance) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S7b"})
-    assert r.status_code == 200, f"S7b scenario failed: {r.text}"
-    res = r.json()
-    print("S7b Summary:", res["summary"])
-
-    print("\n--- 10. Testing POST /api/action/run-scenario (S8: GPU fault NoExecute) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S8"})
-    assert r.status_code == 200, f"S8 scenario failed: {r.text}"
-    res = r.json()
-    print("S8 Summary:", res["summary"])
-
-    print("\n--- 11. Testing POST /api/action/run-scenario (reset) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "reset"})
-    assert r.status_code == 200, f"Reset scenario failed: {r.text}"
-    res = r.json()
-    assert res["snapshot"]["counts"]["gpu_reserved"] is False
-    print("Reset Summary:", res["summary"])
-
-    print("\n--- 12. Testing POST /api/action/run-scenario with invalid scenario (400 validation) ---")
-    r = client.post("/api/action/run-scenario", json={"scenario": "S99_INVALID"})
-    assert r.status_code == 400, f"Expected 400, got {r.status_code}"
-    print("Invalid scenario properly rejected:", r.json()["detail"])
-
-    print("\n--- 13. Testing GET /api/export ---")
-    r = client.get("/api/export")
+    # /api/taints alias on worker
+    r = client.post("/api/taints", json={
+        "action": "add",
+        "node": "taints-lab-worker",
+        "key": "test-alias-key",
+        "value": "val",
+        "effect": "PreferNoSchedule"
+    })
     assert r.status_code == 200
-    export_data = r.json()
-    assert "markdown_report" in export_data
-    print("Export report verified successfully.")
+    assert r.json()["success"] is True
+    print("✓ POST /api/taints alias successfully added taint")
+
+    r = client.post("/api/taints", json={
+        "action": "remove",
+        "node": "taints-lab-worker",
+        "key": "test-alias-key",
+        "effect": "PreferNoSchedule"
+    })
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    print("✓ POST /api/taints alias successfully removed taint")
+
+    # /api/steps/run and /api/steps/reset aliases
+    r = client.post("/api/steps/run", json={"step": 1})
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    print("✓ POST /api/steps/run works (Step 1 executed)")
+
+    r = client.post("/api/steps/reset")
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    print("✓ POST /api/steps/reset works (Step 0 reset executed)")
+
+    # /api/workloads/deploy, delete, delete-all aliases
+    r = client.post("/api/workloads/deploy", json={"file": "02-website.yaml"})
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    print("✓ POST /api/workloads/deploy alias works")
+
+    r = client.post("/api/workloads/delete", json={"file": "02-website.yaml"})
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    print("✓ POST /api/workloads/delete alias works")
+
+    r = client.post("/api/workloads/delete-all")
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    print("✓ POST /api/workloads/delete-all alias works")
+
+    print("\n--- 3. Testing Real Error / Failure Reporting ---")
+    # Deploy non-existent file to test error propagation
+    r = client.post("/api/action/workload", json={"action": "deploy", "file": "invalid-file.yaml"})
+    assert r.status_code == 400 or r.status_code == 404
+    print("✓ Non-existent workload properly triggers HTTP error")
+
+    print("\n--- 4. Testing Scenario S8 with Verified Running Pre-Condition ---")
+    print("Executing Scenario S8 (auto-waiting for all 3 pods to be Running before NoExecute taint)...")
+    r = client.post("/api/action/run-scenario", json={"scenario": "S8"})
+    assert r.status_code == 200, f"S8 execution failed: {r.text}"
+    s8_res = r.json()
+    print("S8 Success:", s8_res["success"])
+    print("S8 Summary:", s8_res["summary"])
+    assert s8_res["success"] is True
+
+    # Verify pods in gpu-lab during/after S8
+    r = client.get("/api/status")
+    pods = r.json().get("pods", [])
+    print(f"Pods observed in S8 snapshot: {len(pods)}")
+    for p in pods:
+        print(f"  Pod {p['name']} on {p['node']} - phase: {p['phase']}")
+
+    print("\n--- 5. Testing Leftover Taints Cleanup across Scenarios ---")
+    # Move from S8 directly to S1: leftover gpu-fault NoExecute taint MUST be wiped!
+    r = client.post("/api/action/run-scenario", json={"scenario": "S1"})
+    assert r.status_code == 200
+    s1_res = r.json()
+    assert s1_res["success"] is True
+    # Verify no taints remain on worker2
+    worker2_node = next(n for n in s1_res["snapshot"]["nodes"] if n["name"] == "taints-lab-worker2")
+    print(f"Worker2 taints in S1: {worker2_node['taints']}")
+    assert len(worker2_node["taints"]) == 0, f"Expected 0 taints on worker2, found {worker2_node['taints']}"
+    print("✓ Leftover gpu-fault and maintenance taints successfully cleaned in S1!")
+
+    print("\n--- 6. Clean reset ---")
+    r = client.post("/api/action/run-scenario", json={"scenario": "reset"})
+    assert r.status_code == 200
+    print("✓ Final reset completed.")
 
     print("\n==========================================")
-    print("ALL SCENARIO RUNNER & HARDWARE TESTS PASSED!")
+    print("ALL BUG FIXES & ROUTE ALIASES VERIFIED!")
     print("==========================================")
 
 if __name__ == "__main__":

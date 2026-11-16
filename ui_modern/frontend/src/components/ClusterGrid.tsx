@@ -47,8 +47,7 @@ export const ClusterGrid: React.FC<ClusterGridProps> = ({ nodes, pods, onSelectP
   const gpuCpuCores = ((8 * gpuCpuPct) / 100).toFixed(1);
   const gpuMemPct = Math.min(95, 20 + gpuPods.length * 19);
   const gpuMemGiB = ((7.7 * gpuMemPct) / 100).toFixed(1);
-  const gpuVramPct = Math.min(96, gpuPods.length * 30);
-  const gpuVramGiB = ((40 * gpuVramPct) / 100).toFixed(1);
+  const gpuAllocPct = Math.min(100, Math.round((gpuPods.length / 3) * 100));
 
   const pendingCpuReq = (pendingPods.length * 0.5).toFixed(1);
   const pendingMemReq = (pendingPods.length * 512).toFixed(0);
@@ -353,11 +352,11 @@ export const ClusterGrid: React.FC<ClusterGridProps> = ({ nodes, pods, onSelectP
             </div>
             <div className="space-y-1">
               <div className="flex items-center justify-between text-[9px] font-mono">
-                <span className="text-slate-500">GPU VRAM (NVIDIA A100)</span>
-                <span className="text-fuchsia-300 font-semibold">{gpuVramPct}% ({gpuVramGiB} / 40.0 GiB)</span>
+                <span className="text-slate-500">GPU Slot Capacity (hardware=gpu)</span>
+                <span className="text-fuchsia-300 font-semibold">{gpuAllocPct}% ({gpuPods.length} ML Jobs)</span>
               </div>
               <div className="w-full h-1 bg-white/[0.05] rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-400 rounded-full transition-all duration-500 shadow-[0_0_8px_rgba(232,121,249,0.4)]" style={{ width: `${gpuVramPct}%` }} />
+                <div className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-400 rounded-full transition-all duration-500 shadow-[0_0_8px_rgba(232,121,249,0.4)]" style={{ width: `${gpuAllocPct}%` }} />
               </div>
             </div>
           </div>

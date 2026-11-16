@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { sound } from '../lib/sound';
+import { api } from '../services/api';
 import {
   Play,
   Pause,
@@ -70,7 +71,7 @@ export const AutoPilotModal: React.FC<AutoPilotModalProps> = ({
       runAction: async () => {
         await onDeleteAllWorkloads();
         await onResetLab();
-        await onDeployWorkload('01-website.yaml');
+        await onDeployWorkload('02-website.yaml');
       },
     },
     {
@@ -88,7 +89,7 @@ export const AutoPilotModal: React.FC<AutoPilotModalProps> = ({
         'No. NoSchedule is purely a placement constraint during scheduling. Running pods are unaffected. Only NoExecute causes eviction of running pods.',
       runAction: async () => {
         await onRunStep(1);
-        await onDeployWorkload('01-website.yaml');
+        await onDeployWorkload('02-website.yaml');
       },
     },
     {
@@ -105,7 +106,7 @@ export const AutoPilotModal: React.FC<AutoPilotModalProps> = ({
       vivaAnswer:
         'Tolerations are passive permissions, not affinities or constraints. To force scheduling to the GPU node, a nodeSelector or nodeAffinity is required alongside the toleration.',
       runAction: async () => {
-        await onDeployWorkload('02-ml-training-toleration-only.yaml');
+        await onDeployWorkload('03-ml-training-toleration-only.yaml');
       },
     },
     {
@@ -122,7 +123,7 @@ export const AutoPilotModal: React.FC<AutoPilotModalProps> = ({
       vivaAnswer:
         'Taints and tolerations require exact string matching. If there is a typo (like "gpus"), the toleration fails, and the pod is rejected from the GPU node.',
       runAction: async () => {
-        await onDeployWorkload('03-ml-training-dedicated.yaml');
+        await onDeployWorkload('05-ml-training-dedicated.yaml');
       },
     },
     {
@@ -156,8 +157,12 @@ export const AutoPilotModal: React.FC<AutoPilotModalProps> = ({
       vivaAnswer:
         'Our container entrypoint shell script uses "exec" and forwards SIGTERM directly to the Python process (PID 1). Without this, containers ignore SIGTERM and wait for Docker/Kubernetes SIGKILL after 30 seconds.',
       runAction: async () => {
-        await onDeployWorkload('05-gpu-fault-test-pods.yaml');
-        await onRunStep(4);
+        try {
+          await api.runScenario('S8');
+        } catch {
+          await onDeployWorkload('06-gpu-fault-pods.yaml');
+          await onRunStep(4);
+        }
       },
     },
   ];

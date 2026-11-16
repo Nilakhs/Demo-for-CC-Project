@@ -106,7 +106,7 @@ flowchart TD
 
         subgraph GPU_Node["GPU Worker: taints-lab-worker2"]
             GPU_Specs["Capacity: 8 vCPUs | 7.7 GiB RAM\nLabel: hardware=gpu\nTaint: hardware=gpu:NoSchedule"]
-            MLPods["🧠 ML Training Pods (Simulated A100)\nToleration: hardware=gpu\nnodeSelector: hardware=gpu"]
+            MLPods["🧠 ML Training Pods (Simulated GPU Workloads)\nToleration: hardware=gpu\nnodeSelector: hardware=gpu"]
         end
     end
 
@@ -199,7 +199,7 @@ The **Cosmos Kubernetes Studio** is a cyber-glassmorphic, real-time command cent
 
 ### 🌌 1. Cluster Observatory & Live Node Telemetry
 - **Hardware Capacity Meters**: Real-time gauges displaying exact node hardware resources (8 vCPUs, 7.7 GiB memory, Linux Kernel `6.6.87.2-WSL2`, `containerd://2.3.4` runtime).
-- **A100 GPU VRAM Gauge**: Visual simulated VRAM consumption gauge (40 GB / 80 GB partition telemetry) for `taints-lab-worker2`.
+- **Simulated GPU Slot Capacity Meter**: Real-time workload allocation gauge showing active ML training pods bound to `taints-lab-worker2` via `hardware=gpu` taint and label constraints (honestly acknowledging simulated workloads within kind Docker nodes).
 - **Live Pod Placement Chips**: Interactive chips displaying pod names, application tiers, phase statuses, and pulsing health indicators (Green = Ready, Amber = Initializing, Crimson = Terminating).
 - **Instant Explain Drawer**: Clicking any pod immediately queries `/api/explain/{pod_name}` to evaluate and explain scheduling compatibility across all nodes.
 
