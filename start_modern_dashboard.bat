@@ -27,5 +27,12 @@ if %PY_EXE%=="" (
     exit /b 1
 )
 
+if not exist "%~dp0ui_modern\frontend\node_modules\" (
+    echo [*] Initial setup: Installing frontend dependencies...
+    pushd "%~dp0ui_modern\frontend"
+    call npm install
+    popd
+)
+
 %PY_EXE% "%~dp0ui_modern\run_dashboard.py"
 pause

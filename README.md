@@ -258,7 +258,8 @@ Every scenario was rigorously verified across 12 automated snapshots using `scri
 2. **Container Engine**: [Docker Desktop](https://www.docker.com/products/docker-desktop/) (must be running).
 3. **Cluster Utility**: [kind](https://kind.sigs.k8s.io/) (`winget install Kubernetes.kind` or `brew install kind`).
 4. **CLI Tools**: [kubectl](https://kubernetes.io/docs/tasks/tools/) (`winget install Kubernetes.kubectl`).
-5. **Runtimes**: Python 3.11+ and Node.js v18+.
+5. **Runtimes**: Python 3.11+ and Node.js v20.19+ / v22.12+ (required for Vite 8).
+6. **Backend Dependencies**: `pip install -r ui_modern/backend/requirements.txt` (FastAPI, Uvicorn, Pydantic, HTTPX).
 
 ---
 
@@ -289,7 +290,7 @@ Simply double-click the included batch script from Windows Explorer or run from 
 #### 1. Start the FastAPI Backend Proxy
 ```powershell
 cd ui_modern/backend
-& "C:\Users\nilak\AppData\Local\Python\pythoncore-3.11-64\python.exe" server.py
+python server.py
 # Backend runs at http://127.0.0.1:8000
 # Interactive Swagger OpenAPI Documentation: http://127.0.0.1:8000/docs
 ```

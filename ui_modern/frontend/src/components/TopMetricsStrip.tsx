@@ -4,6 +4,7 @@ import { Server, Cpu, Layers, AlertCircle } from 'lucide-react';
 interface MetricsStripProps {
   totalNodes: number;
   gpuReserved: boolean;
+  gpuTaintEffect?: string;
   placedPodsCount: number;
   pendingPodsCount: number;
 }
@@ -11,6 +12,7 @@ interface MetricsStripProps {
 export const TopMetricsStrip: React.FC<MetricsStripProps> = ({
   totalNodes,
   gpuReserved,
+  gpuTaintEffect,
   placedPodsCount,
   pendingPodsCount,
 }) => {
@@ -61,12 +63,22 @@ export const TopMetricsStrip: React.FC<MetricsStripProps> = ({
             {gpuReserved ? 'ACTIVE' : 'OPEN'}
           </span>
           <span className="text-xs font-mono text-slate-400">
-            {gpuReserved ? 'hardware=gpu:NoSchedule' : 'No taint'}
+            {gpuReserved
+              ? gpuTaintEffect === 'PreferNoSchedule'
+                ? 'hardware=gpu:PreferNoSchedule (Soft Reservation)'
+                : 'hardware=gpu:NoSchedule (Hard Reservation)'
+              : 'No taint'}
           </span>
         </div>
         <div className="mt-2 text-[11px] font-mono flex items-center gap-1.5 text-slate-400">
           <span className={`w-1.5 h-1.5 rounded-full ${gpuReserved ? 'bg-violet-400' : 'bg-amber-400'}`} />
-          <span>{gpuReserved ? 'Dedicated for ML training' : 'General workloads can schedule'}</span>
+          <span>
+            {gpuReserved
+              ? gpuTaintEffect === 'PreferNoSchedule'
+                ? 'Soft preference: avoided if possible'
+                : 'Dedicated for ML training'
+              : 'General workloads can schedule'}
+          </span>
         </div>
       </div>
 

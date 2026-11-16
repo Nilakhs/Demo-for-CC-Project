@@ -2,7 +2,7 @@ import type { ClusterStatusResponse } from '../types';
 
 export function generateMarkdownReport(data: ClusterStatusResponse): string {
   const timestamp = new Date().toISOString();
-  const placedPods = data.pods.filter((p) => p.nodeName);
+  const placedPods = data.pods.filter((p) => p.nodeName && p.phase !== 'Pending');
   const pendingPods = data.pods.filter((p) => !p.nodeName || p.phase === 'Pending');
 
   return `# Cloud Computing Lab Evaluation 2 — Cluster Scheduling Report

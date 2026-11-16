@@ -37,8 +37,8 @@ export const GuidedStepsTab: React.FC<GuidedStepsTabProps> = ({
 
   const worker1 = nodes.find((n) => n.name === 'taints-lab-worker');
   const worker2 = nodes.find((n) => n.name === 'taints-lab-worker2');
-  const worker1Pods = pods.filter((p) => p.nodeName === 'taints-lab-worker');
-  const worker2Pods = pods.filter((p) => p.nodeName === 'taints-lab-worker2');
+  const worker1Pods = pods.filter((p) => p.nodeName === 'taints-lab-worker' && p.phase !== 'Pending');
+  const worker2Pods = pods.filter((p) => p.nodeName === 'taints-lab-worker2' && p.phase !== 'Pending');
   const pendingPods = pods.filter((p) => !p.nodeName || p.phase === 'Pending');
 
   const steps = [

@@ -129,7 +129,7 @@ Because "gpus" does not equal "gpu", the toleration evaluation returns FALSE. Th
           {activeTab === 'viva' && (
             <div className="space-y-4">
               <div className="p-3.5 rounded-xl bg-emerald-950/20 border border-emerald-500/30 text-emerald-300 text-xs">
-                💡 <strong>Evaluator Tip:</strong> Evaluators commonly test whether you understand that <em>tolerations repel, they do not attract</em>. Review these five core answers:
+                💡 <strong>Evaluator Tip:</strong> Evaluators commonly test whether you understand that <em>taints repel; tolerations permit passage. A toleration never repels and never attracts; it only allows a pod to be scheduled on a tainted node.</em> Review these five core answers:
               </div>
 
               <div className="space-y-3">

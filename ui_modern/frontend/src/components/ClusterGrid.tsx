@@ -17,17 +17,20 @@ import {
 interface ClusterGridProps {
   nodes: NodeInfo[];
   pods: PodInfo[];
+  gpuReserved?: boolean;
   onSelectPod: (pod: PodInfo) => void;
   onViewLogs?: (pod: PodInfo) => void;
 }
 
-export const ClusterGrid: React.FC<ClusterGridProps> = ({ nodes, pods, onSelectPod, onViewLogs }) => {
+export const ClusterGrid: React.FC<ClusterGridProps> = ({ nodes, pods, gpuReserved, onSelectPod, onViewLogs }) => {
   const controlPlane = nodes.find((n) => n.name === 'taints-lab-control-plane');
   const generalWorker = nodes.find((n) => n.name === 'taints-lab-worker');
   const gpuWorker = nodes.find((n) => n.name === 'taints-lab-worker2');
 
-  const placedPods = pods.filter((p) => p.nodeName);
+  const placedPods = pods.filter((p) => p.nodeName && p.phase !== 'Pending');
   const pendingPods = pods.filter((p) => !p.nodeName || p.phase === 'Pending');
+
+  const isGpuReserved = gpuReserved ?? gpuWorker?.taints.some((t) => t.key === 'hardware');
 
   const getPodsForNode = (nodeName: string) => {
     return placedPods.filter((p) => p.nodeName === nodeName);
@@ -49,8 +52,9 @@ export const ClusterGrid: React.FC<ClusterGridProps> = ({ nodes, pods, onSelectP
   const gpuMemGiB = ((7.7 * gpuMemPct) / 100).toFixed(1);
   const gpuAllocPct = Math.min(100, Math.round((gpuPods.length / 3) * 100));
 
-  const pendingCpuReq = (pendingPods.length * 0.5).toFixed(1);
-  const pendingMemReq = (pendingPods.length * 512).toFixed(0);
+  // Actual requested resources: 10m / 16Mi for website, 20m / 32Mi for ML
+  const pendingCpuReq = pendingPods.reduce((acc, p) => acc + (p.app === 'website' ? 10 : 20), 0);
+  const pendingMemReq = pendingPods.reduce((acc, p) => acc + (p.app === 'website' ? 16 : 32), 0);
 
   const renderTaints = (taints: Taint[]) => {
     if (!taints || taints.length === 0) {
@@ -291,9 +295,15 @@ export const ClusterGrid: React.FC<ClusterGridProps> = ({ nodes, pods, onSelectP
                 </h3>
               </div>
             </div>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-950/80 border border-violet-500/50 text-violet-300 font-semibold shrink-0 whitespace-nowrap">
-              RESERVED
-            </span>
+            {isGpuReserved ? (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-950/80 border border-violet-500/50 text-violet-300 font-semibold shrink-0 whitespace-nowrap">
+                RESERVED
+              </span>
+            ) : (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/10 text-slate-400 shrink-0 whitespace-nowrap">
+                OPEN
+              </span>
+            )}
           </div>
 
           {/* Active Taints */}
@@ -330,7 +340,6 @@ export const ClusterGrid: React.FC<ClusterGridProps> = ({ nodes, pods, onSelectP
                 <Cpu className="w-3 h-3 text-violet-400" />
                 <span>8 vCPUs · 7.7 GiB RAM</span>
               </span>
-              <span className="text-violet-400 text-[9px]">PCIe 4.0 x16</span>
             </div>
             <div className="space-y-1">
               <div className="flex items-center justify-between text-[9px] font-mono">
@@ -439,7 +448,7 @@ export const ClusterGrid: React.FC<ClusterGridProps> = ({ nodes, pods, onSelectP
             <div className="space-y-1">
               <div className="flex items-center justify-between text-[9px] font-mono">
                 <span className="text-slate-500">Blocked CPU Demand</span>
-                <span className="text-amber-300 font-semibold">~{pendingCpuReq} vCPUs</span>
+                <span className="text-amber-300 font-semibold">~{pendingCpuReq}m CPU</span>
               </div>
               <div className="w-full h-1 bg-white/[0.05] rounded-full overflow-hidden">
                 <div

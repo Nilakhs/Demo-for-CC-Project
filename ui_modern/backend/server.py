@@ -364,7 +364,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -403,17 +403,24 @@ def get_status():
     """
     raw_nodes = kjson("get", "nodes")
     if raw_nodes is None:
+        with log_lock:
+            recent_logs = list(command_log)[:30]
         return {
             "connected": False,
+            "clusterConnected": False,
+            "gpuReserved": False,
             "counts": {
                 "nodes_count": 0,
                 "gpu_reserved": False,
+                "gpuReserved": False,
                 "pods_placed_count": 0,
                 "pods_pending_count": 0,
             },
             "nodes": [],
             "pods": [],
             "events": [],
+            "commandLogs": recent_logs,
+            "command_logs": recent_logs,
         }
 
     nodes_dict = {n["metadata"]["name"]: n for n in raw_nodes.get("items", [])}
@@ -433,16 +440,23 @@ def get_status():
         node_name = spec.get("nodeName")
         labels = meta.get("labels", {})
         is_terminating = bool(meta.get("deletionTimestamp"))
-        phase = "terminating" if is_terminating else status_info.get("phase", "Unknown")
+        raw_phase = status_info.get("phase", "Unknown")
+        if is_terminating:
+            phase = "Terminating"
+        else:
+            phase = raw_phase.capitalize() if raw_phase else "Unknown"
 
         # Container ready status
         c_statuses = status_info.get("containerStatuses", [])
-        ready = len(c_statuses) > 0 and all(c.get("ready", False) for c in c_statuses)
-        if not ready:
-            ready = any(
+        total_c = len(c_statuses) if c_statuses else 1
+        ready_c = sum(1 for c in c_statuses if c.get("ready", False))
+        is_ready = len(c_statuses) > 0 and all(c.get("ready", False) for c in c_statuses)
+        if not is_ready:
+            is_ready = any(
                 cond.get("type") == "Ready" and cond.get("status") == "True"
                 for cond in status_info.get("conditions", [])
             )
+        ready_str = f"{ready_c}/{total_c}" if c_statuses else ("1/1" if is_ready else "0/1")
 
         tols = spec.get("tolerations", [])
         user_tols = [t for t in tols if not t.get("key", "").startswith("node.kubernetes.io/")]
@@ -455,7 +469,9 @@ def get_status():
             "case": labels.get("case", ""),
             "phase": phase,
             "node": node_name,
-            "ready": ready,
+            "nodeName": node_name,
+            "ready": ready_str,
+            "is_ready": is_ready,
             "tolerations": tols,
             "user_tolerations": user_tols,
             "nodeSelector": spec.get("nodeSelector") or {},
@@ -491,6 +507,7 @@ def get_status():
 
         node_placed_pods = [p for p in placed_pods if p.get("node") == name]
         node_placed_pods.sort(key=lambda x: x["name"])
+        node_active_pods = [p for p in node_placed_pods if not p.get("is_terminating")]
 
         # Node hardware info & runtime
         node_info = n_status.get("nodeInfo", {})
@@ -514,7 +531,8 @@ def get_status():
             "labels": n_labels,
             "hardware": hardware_label,
             "is_ready": is_ready,
-            "pod_count": len(node_placed_pods),
+            "ready": is_ready,
+            "pod_count": len(node_active_pods),
             "pods": node_placed_pods,
             "creationTimestamp": n_meta.get("creationTimestamp"),
             # Hardware specs matching requirements
@@ -538,11 +556,15 @@ def get_status():
     gpu_taints = gpu_node.get("spec", {}).get("taints", [])
     gpu_reserved = any(t.get("key") == "hardware" for t in gpu_taints)
 
+    active_placed = [p for p in placed_pods if not p.get("is_terminating")]
+    active_pending = [p for p in pending_pods if not p.get("is_terminating")]
+
     counts = {
         "nodes_count": len(nodes_list),
         "gpu_reserved": gpu_reserved,
-        "pods_placed_count": len(placed_pods),
-        "pods_pending_count": len(pending_pods),
+        "gpuReserved": gpu_reserved,
+        "pods_placed_count": len(active_placed),
+        "pods_pending_count": len(active_pending),
     }
 
     # Events
@@ -563,12 +585,19 @@ def get_status():
 
     events_list.sort(key=lambda x: x["last_seen"], reverse=True)
 
+    with log_lock:
+        recent_logs = list(command_log)[:30]
+
     return {
         "connected": True,
+        "clusterConnected": True,
+        "gpuReserved": gpu_reserved,
         "counts": counts,
         "nodes": nodes_list,
         "pods": pods_list,
         "events": events_list[:50],
+        "commandLogs": recent_logs,
+        "command_logs": recent_logs,
     }
 
 
@@ -729,6 +758,12 @@ def run_scenario(payload: ScenarioRequest):
         kubectl("delete", "deployment", "-n", NS, "--all", "--ignore-not-found", "--wait=false")
         # Force delete pods so pods never stay in terminating state during subsequent applies
         kubectl("delete", "pod", "-n", NS, "--all", "--ignore-not-found", "--grace-period=0", "--force")
+        t_del = time.time()
+        while time.time() - t_del < 5.0:
+            chk = kjson("get", "pods", "-n", NS)
+            if not chk or not chk.get("items"):
+                break
+            time.sleep(0.2)
 
     if sc == "S1":
         # S1: Baseline (GPU node not reserved yet; website spreads everywhere)
@@ -818,6 +853,7 @@ def run_scenario(payload: ScenarioRequest):
         clear_transient_taints()
         run_cmd("S8 label GPU", "label", "nodes", GPU, "hardware=gpu", "--overwrite")
         run_cmd("S8 taint GPU", "taint", "nodes", GPU, "hardware=gpu:NoSchedule", "--overwrite")
+        kubectl("delete", "pod", "-n", NS, "-l", "app=gpu-fault-test", "--force", "--grace-period=0", "--ignore-not-found")
         clean_existing_workloads()
         time.sleep(0.5)
         run_cmd("S8 deploy fault test pods", "apply", "-f", str(K8S / "06-gpu-fault-pods.yaml"))
@@ -868,6 +904,8 @@ def run_scenario(payload: ScenarioRequest):
     return {
         "scenario": payload.scenario,
         "success": all_success,
+        "message": summary if all_success else f"Executed with errors: {'; '.join(error_details)}",
+        "output": "\n".join(c.get("output", "") for c in executed_commands if c.get("output")),
         "summary": summary if all_success else f"Executed with errors: {'; '.join(error_details)}",
         "commands": executed_commands,
         "snapshot": current_snapshot,
@@ -937,6 +975,7 @@ def run_guided_step(payload: GuidedStepRequest):
         "success": all_success,
         "step": step,
         "message": msg if all_success else f"{msg} (with errors)",
+        "output": "\n".join(e.get("output", "") for e in executed if e.get("output")),
         "executed": executed,
     }
 
@@ -1104,6 +1143,7 @@ def run_taint_action(payload: TaintRequest):
             "action": "add",
             "node": node,
             "taint": taint_spec,
+            "message": f"Added taint {taint_spec} to {node}" if code == 0 else f"Failed to add taint {taint_spec} to {node}: {out}",
             "returncode": code,
             "output": out,
             "error": out if code != 0 else None,
@@ -1117,6 +1157,7 @@ def run_taint_action(payload: TaintRequest):
             "action": "remove",
             "node": node,
             "taint": taint_spec,
+            "message": f"Removed taint {taint_spec} from {node}" if code == 0 else f"Failed to remove taint {taint_spec} from {node}: {out}",
             "returncode": code,
             "output": out,
             "error": out if code != 0 else None,
@@ -1211,7 +1252,8 @@ def explain_pod(pod_name: str):
         })
 
     is_terminating = bool(p_meta.get("deletionTimestamp"))
-    phase = "terminating" if is_terminating else pod.get("status", {}).get("phase", "Unknown")
+    raw_phase = pod.get("status", {}).get("phase", "Unknown")
+    phase = "Terminating" if is_terminating else (raw_phase.capitalize() if raw_phase else "Unknown")
 
     return {
         "pod_name": pod_name,

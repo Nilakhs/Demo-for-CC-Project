@@ -58,7 +58,7 @@ export const ConstellationMapTab: React.FC<ConstellationMapTabProps> = ({
   const generalWorker = nodes.find((n) => n.name === 'taints-lab-worker');
   const gpuWorker = nodes.find((n) => n.name === 'taints-lab-worker2');
 
-  const placedPods = pods.filter((p) => p.nodeName);
+  const placedPods = pods.filter((p) => p.nodeName && p.phase !== 'Pending');
   const pendingPods = pods.filter((p) => !p.nodeName || p.phase === 'Pending');
 
   const controlPlanePods = placedPods.filter((p) => p.nodeName === controlPlane?.name);

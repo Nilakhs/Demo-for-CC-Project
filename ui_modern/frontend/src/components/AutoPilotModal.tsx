@@ -135,7 +135,7 @@ export const AutoPilotModal: React.FC<AutoPilotModalProps> = ({
       whatToSay:
         'Every node now has a taint that the website cannot tolerate. Instead of crashing, the pods enter the Pending state with FailedScheduling. As soon as maintenance completes, Kubernetes places them automatically.',
       underTheHood:
-        'Scheduler filters evaluate all 3 nodes: control-plane (tainted), worker (maintenance taint), worker2 (gpu taint). 0/3 nodes available. Pod stays in the scheduling queue in etcd.',
+        'Scheduler filters evaluate all 3 nodes: control-plane (tainted), worker (maintenance taint), worker2 (gpu taint). 0/3 nodes available. Pod stays in the kube-scheduler queue.',
       vivaQuestion: 'Do pods in the Pending state consume CPU or RAM on the cluster nodes?',
       vivaAnswer:
         'No. Pending pods only exist as metadata in the kube-apiserver etcd database. No containers are created by containerd until a pod binds to a node.',
@@ -150,12 +150,12 @@ export const AutoPilotModal: React.FC<AutoPilotModalProps> = ({
       scenarioSubtitle: 'Taint: gpu-fault=true:NoExecute · Eviction Mechanics',
       actionDescription: 'Injecting NoExecute fault; observing immediate vs 30s grace vs monitor pod.',
       whatToSay:
-        'NoExecute actively purges running pods. Watch ml-job-no-grace get evicted in 1.5 seconds thanks to proper PID 1 signal forwarding, ml-job-grace-30s gets 30 seconds to checkpoint, while gpu-monitor stays alive permanently.',
+        'NoExecute actively purges running pods. Watch ml-job-no-grace get evicted in 1.5 seconds thanks to proper PID 1 Python signal handling, ml-job-grace-30s gets 30 seconds to checkpoint, while gpu-monitor stays alive permanently.',
       underTheHood:
         'TaintManager controller immediately detects the NoExecute taint on worker2. Pods without toleration get deletionTimestamp instantly. Pods with tolerationSeconds get a timer.',
       vivaQuestion: 'Why did our container take only 1.5 seconds to terminate instead of 30 seconds?',
       vivaAnswer:
-        'Our container entrypoint shell script uses "exec" and forwards SIGTERM directly to the Python process (PID 1). Without this, containers ignore SIGTERM and wait for Docker/Kubernetes SIGKILL after 30 seconds.',
+        "The container runs Python directly as PID 1, which intercepts SIGTERM using Python's signal handler (signal.signal(signal.SIGTERM, stop)), saving checkpoints and exiting in ~1.5s instead of hitting Kubernetes's 30s SIGKILL grace timeout.",
       runAction: async () => {
         try {
           await api.runScenario('S8');
@@ -179,19 +179,20 @@ export const AutoPilotModal: React.FC<AutoPilotModalProps> = ({
     }
 
     timerRef.current = window.setInterval(() => {
-      setSecondsRemaining((prev) => {
-        if (prev <= 1) {
-          handleNextAct();
-          return durationPerStep;
-        }
-        return prev - 1;
-      });
+      setSecondsRemaining((prev) => Math.max(0, prev - 1));
     }, 1000);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isOpen, isPlaying, currentActIndex, durationPerStep]);
+  }, [isOpen, isPlaying]);
+
+  useEffect(() => {
+    if (isPlaying && secondsRemaining === 0) {
+      setSecondsRemaining(durationPerStep);
+      handleNextAct();
+    }
+  }, [secondsRemaining, isPlaying, durationPerStep]);
 
   // Execute current act
   const handleExecuteAct = async () => {

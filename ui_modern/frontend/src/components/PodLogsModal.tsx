@@ -92,13 +92,27 @@ export const PodLogsModal: React.FC<PodLogsModalProps> = ({ pod, onClose }) => {
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-mono text-cyan-400 font-bold uppercase tracking-wider">
-                  Live Container Stream (stdout/stderr)
+                  {pod.phase === 'Pending' || !pod.nodeName
+                    ? 'Waiting for Pod to schedule...'
+                    : 'Live Container Stream (stdout/stderr)'}
                 </span>
                 <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
                   {pod.app}
                 </span>
-                <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                <span
+                  className={`text-[10px] font-mono px-2 py-0.2 rounded-full border flex items-center gap-1 ${
+                    pod.phase === 'Pending' || !pod.nodeName
+                      ? 'bg-amber-950/70 border-amber-500/40 text-amber-300'
+                      : 'bg-emerald-950/70 border-emerald-500/40 text-emerald-300'
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      pod.phase === 'Pending' || !pod.nodeName
+                        ? 'bg-amber-400 animate-pulse'
+                        : 'bg-emerald-400 animate-ping'
+                    }`}
+                  />
                   <span>{pod.phase}</span>
                 </span>
               </div>
@@ -190,8 +204,12 @@ export const PodLogsModal: React.FC<PodLogsModalProps> = ({ pod, onClose }) => {
         {/* Terminal Window Body */}
         <div className="p-4 overflow-y-auto bg-[#04060a] font-mono text-xs text-slate-200 space-y-1 flex-1 min-h-[300px]">
           {filteredLogs.length === 0 ? (
-            <div className="py-12 text-center text-slate-600 font-mono">
-              {loading ? 'Fetching container log buffer...' : 'No logs recorded or matching query.'}
+            <div className="py-12 text-center text-slate-500 font-mono">
+              {loading
+                ? 'Fetching container log buffer...'
+                : pod.phase === 'Pending' || !pod.nodeName
+                ? 'Waiting for Pod to schedule... No container logs available until the Pod is placed on a node.'
+                : 'No logs recorded or matching query.'}
             </div>
           ) : (
             filteredLogs.map((line, idx) => {

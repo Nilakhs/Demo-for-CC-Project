@@ -29,7 +29,7 @@ export const TalkingPointsBanner: React.FC<TalkingPointsBannerProps> = ({
   const generalWorker = nodes.find((n) => n.name === 'taints-lab-worker');
   const gpuWorker = nodes.find((n) => n.name === 'taints-lab-worker2');
 
-  const placedPods = pods.filter((p) => p.nodeName);
+  const placedPods = pods.filter((p) => p.nodeName && p.phase !== 'Pending');
   const pendingPods = pods.filter((p) => !p.nodeName || p.phase === 'Pending');
 
   const generalPods = placedPods.filter((p) => p.nodeName === generalWorker?.name);
@@ -41,8 +41,12 @@ export const TalkingPointsBanner: React.FC<TalkingPointsBannerProps> = ({
   const hasGpuTaint = gpuWorker?.taints.some((t) => t.key === 'hardware');
   const hasGpuLabel = gpuWorker?.labels['hardware'] === 'gpu';
 
-  const hasDedicatedMl = gpuPods.some((p) => p.app === 'ml-training' || p.app === 'ml-training-dedicated');
-  const hasTolOnlyMl = pods.some((p) => p.app === 'ml-training-toleration-only');
+  const hasDedicatedMl = gpuPods.some(
+    (p) => (p.app === 'ml-training' || p.app === 'ml-training-dedicated') && p.nodeSelector?.hardware === 'gpu'
+  );
+  const hasTolOnlyMl =
+    gpuPods.some((p) => (p.app === 'ml-training' || p.app === 'ml-training-toleration-only') && !p.nodeSelector?.hardware) &&
+    generalPods.some((p) => (p.app === 'ml-training' || p.app === 'ml-training-toleration-only') && !p.nodeSelector?.hardware);
   const hasWebsiteOnGpu = gpuPods.some((p) => p.app === 'website');
 
   let stateTitle = 'Baseline Cluster';
@@ -51,7 +55,7 @@ export const TalkingPointsBanner: React.FC<TalkingPointsBannerProps> = ({
   let talkingPoint =
     'With no taints on the GPU node, the Kubernetes scheduler spreads ordinary website workloads across all available nodes, wasting expensive GPU capacity.';
   let mechanics =
-    'Filter phase passes all nodes (no untolerated taints). Score phase uses LeastRequestedPriority to balance replicas evenly.';
+    'Filter phase passes all nodes (no untolerated taints). Score phase uses NodeResourcesBalancedAllocation / ImageLocality priority to balance replicas evenly.';
   let vivaQuestion = 'How does the default scheduler decide which node gets a pod?';
   let vivaAnswer =
     'First it runs predicates/filters to eliminate incompatible nodes, then calculates priority scores to find the node with the highest available resource balance.';
@@ -61,12 +65,12 @@ export const TalkingPointsBanner: React.FC<TalkingPointsBannerProps> = ({
     badgeText = 'Active TaintManager Eviction';
     badgeColor = 'bg-rose-500/20 text-rose-300 border-rose-500/40';
     talkingPoint =
-      'NoExecute actively purges running pods! ml-job-no-grace is evicted in 1.5s thanks to proper PID 1 signal forwarding, ml-job-grace-30s gets 30s to checkpoint, while gpu-monitor stays alive permanently because it tolerates NoExecute.';
+      'NoExecute actively purges running pods! ml-job-no-grace is evicted in 1.5s thanks to proper PID 1 Python signal handling, ml-job-grace-30s gets 30s to checkpoint, while gpu-monitor stays alive permanently because it tolerates NoExecute.';
     mechanics =
       'The TaintManager controller in kube-controller-manager detects the NoExecute taint on worker2 and evicts pods asynchronously without going through the scheduler.';
     vivaQuestion = 'Why did our container terminate in 1.5 seconds instead of 30 seconds?';
     vivaAnswer =
-      'Our entrypoint script forwards SIGTERM directly to the Python training process (PID 1). Without this, containers ignore SIGTERM and wait for Docker/K8s SIGKILL after 30 seconds.';
+      "The container runs Python directly as PID 1, which intercepts SIGTERM using Python's signal handler (signal.signal(signal.SIGTERM, stop)), saving checkpoints and exiting in ~1.5s instead of hitting Kubernetes's 30s SIGKILL grace timeout.";
   } else if (hasMaintenance || pendingPods.length > 0) {
     stateTitle = 'General Maintenance (Pending Backlog)';
     badgeText = `${pendingPods.length} Unsatisfied Pods`;
@@ -74,7 +78,7 @@ export const TalkingPointsBanner: React.FC<TalkingPointsBannerProps> = ({
     talkingPoint =
       `General worker is in maintenance (NoSchedule). Since both worker nodes now repel the website pods, kube-scheduler holds them in the Pending queue (${pendingPods.length} pods waiting). No compute resources are wasted.`;
     mechanics =
-      'Scheduler filter returns 0/3 nodes available. Pods remain in the scheduling queue in etcd until a node change event triggers re-evaluation.';
+      'Scheduler filter returns 0/3 nodes available. Pods remain in the kube-scheduler queue until a node change event triggers re-evaluation.';
     vivaQuestion = 'Do pods in the Pending state consume CPU or RAM on the cluster?';
     vivaAnswer =
       'No. Pending pods only exist as JSON metadata in the kube-apiserver etcd database. Containerd does not spawn containers until a pod binds to a node.';

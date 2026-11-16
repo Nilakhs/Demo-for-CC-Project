@@ -282,8 +282,11 @@ export const App: React.FC = () => {
     sound.playTabSwitch();
   };
 
-  const placedPods = clusterData.pods.filter((p) => p.nodeName);
+  const placedPods = clusterData.pods.filter((p) => p.nodeName && p.phase !== 'Pending');
   const pendingPods = clusterData.pods.filter((p) => !p.nodeName || p.phase === 'Pending');
+
+  const gpuNode = clusterData.nodes.find((n) => n.name === 'taints-lab-worker2');
+  const gpuTaintEffect = gpuNode?.taints.find((t) => t.key === 'hardware')?.effect;
 
   const navigationTabs = [
     {
@@ -440,6 +443,7 @@ export const App: React.FC = () => {
             <TopMetricsStrip
               totalNodes={clusterData.nodes.length}
               gpuReserved={clusterData.gpuReserved}
+              gpuTaintEffect={gpuTaintEffect}
               placedPodsCount={placedPods.length}
               pendingPodsCount={pendingPods.length}
             />
@@ -448,6 +452,7 @@ export const App: React.FC = () => {
             <ClusterGrid
               nodes={clusterData.nodes}
               pods={clusterData.pods}
+              gpuReserved={clusterData.gpuReserved}
               onSelectPod={handlePodClick}
               onViewLogs={handleOpenPodLogs}
             />
