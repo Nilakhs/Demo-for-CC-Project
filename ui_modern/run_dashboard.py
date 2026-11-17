@@ -15,12 +15,8 @@ UI_MODERN = ROOT / "ui_modern"
 BACKEND_DIR = UI_MODERN / "backend"
 FRONTEND_DIR = UI_MODERN / "frontend"
 
-# Prefer the user's working Python 3.11 with FastAPI / Uvicorn installed
-PYTHON_CANDIDATES = [
-    Path(r"C:\Users\nilak\AppData\Local\Python\pythoncore-3.11-64\python.exe"),
-    Path(sys.executable),
-]
-PYTHON_EXE = next((str(p) for p in PYTHON_CANDIDATES if p.exists()), sys.executable)
+# Use the current Python interpreter executing this script
+PYTHON_EXE = sys.executable
 
 
 def main():
